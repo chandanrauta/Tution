@@ -1,0 +1,4 @@
+node_modules/
+backend/tuition.db
+frontend/dist/
+.env
