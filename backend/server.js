@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
 const studentsRouter = require('./routes/students');
 const attendanceRouter = require('./routes/attendance');
@@ -15,6 +16,11 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 app.use('/api/students', studentsRouter);
 app.use('/api/attendance', attendanceRouter);
 app.use('/api/fees', feesRouter);
+
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
+app.use((req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+});
 
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
