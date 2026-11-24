@@ -1,6 +1,22 @@
 import { useEffect, useState } from 'react';
 import { getAttendance, saveAttendance, groupByBatch } from '../api';
 
+function getAbsentWhatsAppLink(record, date) {
+  let digits = (record.parent_phone || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('0')) digits = '91' + digits.slice(1);
+  else if (digits.length === 10) digits = '91' + digits;
+  if (digits.length < 10) return null;
+
+  let instName = 'Triad Study Circle';
+  try {
+    const inst = JSON.parse(localStorage.getItem('tuition_institute') || '{}');
+    if (inst.institute_name) instName = inst.institute_name;
+  } catch {}
+
+  const msg = `ନମସ୍କାର! ଆଜି (${date}) ${record.name} ଟ୍ୟୁସନ୍ କ୍ଲାସ୍‌ରେ ଅନୁପସ୍ଥିତ ଅଛନ୍ତି। - ${instName}`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+}
+
 export default function Attendance() {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(today);
@@ -11,7 +27,7 @@ export default function Attendance() {
   useEffect(() => {
     setSavedMsg('');
     getAttendance(date).then((data) => {
-      setRecords(data.records.map((r) => ({ ...r, status: r.status || 'PRESENT' })));
+      setRecords((data.records || []).map((r) => ({ ...r, status: r.status || 'PRESENT' })));
     });
   }, [date]);
 
@@ -64,17 +80,33 @@ export default function Attendance() {
             {batch} ({list.length})
           </h3>
           <div className="list" style={{ marginTop: 0 }}>
-            {list.map((r) => (
-              <div key={r.student_id} className="card row">
-                <strong>{r.name}</strong>
-                <button
-                  onClick={() => toggleStatus(r.student_id)}
-                  className={r.status === 'PRESENT' ? 'btn-present' : 'btn-absent'}
-                >
-                  {r.status}
-                </button>
-              </div>
-            ))}
+            {list.map((r) => {
+              const absentLink = r.status === 'ABSENT' ? getAbsentWhatsAppLink(r, date) : null;
+              return (
+                <div key={r.student_id} className="card row">
+                  <strong>{r.name}</strong>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {absentLink && (
+                      <a
+                        href={absentLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-outline"
+                        style={{ color: '#b91c1c', borderColor: '#fca5a5' }}
+                      >
+                        Alert
+                      </a>
+                    )}
+                    <button
+                      onClick={() => toggleStatus(r.student_id)}
+                      className={r.status === 'PRESENT' ? 'btn-present' : 'btn-absent'}
+                    >
+                      {r.status}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}

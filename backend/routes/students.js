@@ -1,68 +1,123 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
+const { db } = require('../db');
 
-// GET all active students (pass ?all=true to include inactive)
-router.get('/', (req, res) => {
+function normalizeBatch(raw = '') {
+  return String(raw).trim().replace(/\s+/g, ' ').replace(/^(\d+)\s+(st|nd|rd|th)$/i, '$1$2');
+}
+
+function cleanIndianPhone(raw = '') {
+  let digits = String(raw).replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  return digits;
+}
+
+function isValidIndianPhone(phone) {
+  return /^[6-9]\d{9}$/.test(phone);
+}
+
+router.get('/', async (req, res) => {
   const showAll = req.query.all === 'true';
-  const rows = showAll
-    ? db.prepare('SELECT * FROM students ORDER BY name ASC').all()
-    : db.prepare('SELECT * FROM students WHERE is_active = 1 ORDER BY name ASC').all();
-  res.json(rows);
+  const sql = showAll
+    ? 'SELECT * FROM students WHERE institute_id = ? ORDER BY name ASC'
+    : 'SELECT * FROM students WHERE institute_id = ? AND is_active = 1 ORDER BY name ASC';
+  const result = await db.execute({ sql, args: [req.instituteId] });
+  res.json(result.rows);
 });
 
-// POST register a new student
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name, parent_phone = '', batch = '', monthly_fee = 0 } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ error: 'Student name is required' });
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Student name is required' });
+
+  const phone = cleanIndianPhone(parent_phone);
+  if (!isValidIndianPhone(phone)) {
+    return res.status(400).json({ error: 'Valid 10-digit Indian mobile number (starting with 6-9) is required' });
   }
 
-  const stmt = db.prepare(
-    'INSERT INTO students (name, parent_phone, batch, monthly_fee) VALUES (?, ?, ?, ?)'
-  );
-  const result = stmt.run(name.trim(), parent_phone.trim(), batch.trim(), Number(monthly_fee) || 0);
-  const student = db.prepare('SELECT * FROM students WHERE id = ?').get(Number(result.lastInsertRowid));
-  res.status(201).json(student);
+  const cleanBatch = normalizeBatch(batch);
+  const result = await db.execute({
+    sql: 'INSERT INTO students (institute_id, name, parent_phone, batch, monthly_fee) VALUES (?, ?, ?, ?, ?)',
+    args: [req.instituteId, name.trim(), phone, cleanBatch, Number(monthly_fee) || 0],
+  });
+
+  const created = await db.execute({ sql: 'SELECT * FROM students WHERE id = ?', args: [Number(result.lastInsertRowid)] });
+  res.status(201).json(created.rows[0]);
 });
 
-// PATCH toggle active/inactive status
-router.patch('/:id/toggle', (req, res) => {
-  const { id } = req.params;
-  db.prepare('UPDATE students SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id = ?').run(id);
-  const updated = db.prepare('SELECT * FROM students WHERE id = ?').get(id);
-  if (!updated) return res.status(404).json({ error: 'Student not found' });
-  res.json(updated);
-});
-// PUT update a student's details (name, phone, batch, fee)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { id } = req.params;
   const { name, parent_phone = '', batch = '', monthly_fee = 0 } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ error: 'Student name is required' });
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Student name is required' });
+
+  const phone = cleanIndianPhone(parent_phone);
+  if (!isValidIndianPhone(phone)) {
+    return res.status(400).json({ error: 'Valid 10-digit Indian mobile number (starting with 6-9) is required' });
   }
 
-  const result = db.prepare(`
-    UPDATE students
-    SET name = ?, parent_phone = ?, batch = ?, monthly_fee = ?
-    WHERE id = ?
-  `).run(name.trim(), parent_phone.trim(), batch.trim(), Number(monthly_fee) || 0, id);
+  const cleanBatch = normalizeBatch(batch);
+  const result = await db.execute({
+    sql: 'UPDATE students SET name = ?, parent_phone = ?, batch = ?, monthly_fee = ? WHERE id = ? AND institute_id = ?',
+    args: [name.trim(), phone, cleanBatch, Number(monthly_fee) || 0, id, req.instituteId],
+  });
 
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Student not found' });
-  }
-  const updated = db.prepare('SELECT * FROM students WHERE id = ?').get(id);
-  res.json(updated);
+  if (result.rowsAffected === 0) return res.status(404).json({ error: 'Student not found' });
+  const updated = await db.execute({ sql: 'SELECT * FROM students WHERE id = ?', args: [id] });
+  res.json(updated.rows[0]);
 });
 
-// DELETE a student permanently
-router.delete('/:id', (req, res) => {
+router.patch('/:id/toggle', async (req, res) => {
   const { id } = req.params;
-  const result = db.prepare('DELETE FROM students WHERE id = ?').run(id);
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Student not found' });
-  }
+  await db.execute({
+    sql: 'UPDATE students SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id = ? AND institute_id = ?',
+    args: [id, req.instituteId],
+  });
+  const updated = await db.execute({ sql: 'SELECT * FROM students WHERE id = ? AND institute_id = ?', args: [id, req.instituteId] });
+  if (updated.rows.length === 0) return res.status(404).json({ error: 'Student not found' });
+  res.json(updated.rows[0]);
+});
+
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  const result = await db.execute({
+    sql: 'DELETE FROM students WHERE id = ? AND institute_id = ?',
+    args: [id, req.instituteId],
+  });
+  if (result.rowsAffected === 0) return res.status(404).json({ error: 'Student not found' });
   res.json({ deleted: true, id: Number(id) });
+});
+// POST /api/students/bulk - Import multiple students from CSV
+router.post('/bulk', async (req, res) => {
+  const rows = req.body.students;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'No students found in file.' });
+  }
+
+  const statements = [];
+  const skipped = [];
+
+  for (const r of rows) {
+    const name = String(r.name || '').trim();
+    const phone = cleanIndianPhone(r.parent_phone || '');
+    const batch = normalizeBatch(r.batch || '');
+    const fee = Number(r.monthly_fee) || 0;
+
+    if (!name || !isValidIndianPhone(phone)) {
+      skipped.push(name || 'Unnamed row');
+      continue;
+    }
+
+    statements.push({
+      sql: 'INSERT INTO students (institute_id, name, parent_phone, batch, monthly_fee) VALUES (?, ?, ?, ?, ?)',
+      args: [req.instituteId, name, phone, batch, fee],
+    });
+  }
+
+  if (statements.length > 0) {
+    await db.batch(statements, 'write');
+  }
+
+  res.status(201).json({ imported: statements.length, skipped });
 });
 
 module.exports = router;
