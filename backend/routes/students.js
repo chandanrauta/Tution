@@ -35,6 +35,14 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Valid 10-digit Indian mobile number (starting with 6-9) is required' });
   }
 
+  const dup = await db.execute({
+    sql: 'SELECT id FROM students WHERE institute_id = ? AND LOWER(TRIM(name)) = LOWER(?) AND parent_phone = ?',
+    args: [req.instituteId, name.trim(), phone],
+  });
+  if (dup.rows.length > 0) {
+    return res.status(400).json({ error: 'This student with the same phone number already exists.' });
+  }
+
   const cleanBatch = normalizeBatch(batch);
   const result = await db.execute({
     sql: 'INSERT INTO students (institute_id, name, parent_phone, batch, monthly_fee) VALUES (?, ?, ?, ?, ?)',
@@ -43,6 +51,47 @@ router.post('/', async (req, res) => {
 
   const created = await db.execute({ sql: 'SELECT * FROM students WHERE id = ?', args: [Number(result.lastInsertRowid)] });
   res.status(201).json(created.rows[0]);
+});
+
+router.post('/bulk', async (req, res) => {
+  const rows = req.body.students;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'No students found in file.' });
+  }
+
+  const existingRes = await db.execute({
+    sql: 'SELECT LOWER(TRIM(name)) AS n, parent_phone AS p FROM students WHERE institute_id = ?',
+    args: [req.instituteId],
+  });
+  const seen = new Set(existingRes.rows.map((r) => `${r.n}|${r.p}`));
+
+  const statements = [];
+  const skipped = [];
+
+  for (const r of rows) {
+    const name = String(r.name || '').trim();
+    const phone = cleanIndianPhone(r.parent_phone || '');
+    const batch = normalizeBatch(r.batch || '');
+    const fee = Number(r.monthly_fee) || 0;
+    const key = `${name.toLowerCase()}|${phone}`;
+
+    if (!name || !isValidIndianPhone(phone) || seen.has(key)) {
+      skipped.push(name || 'Unnamed row');
+      continue;
+    }
+
+    seen.add(key);
+    statements.push({
+      sql: 'INSERT INTO students (institute_id, name, parent_phone, batch, monthly_fee) VALUES (?, ?, ?, ?, ?)',
+      args: [req.instituteId, name, phone, batch, fee],
+    });
+  }
+
+  if (statements.length > 0) {
+    await db.batch(statements, 'write');
+  }
+
+  res.status(201).json({ imported: statements.length, skipped });
 });
 
 router.put('/:id', async (req, res) => {
@@ -85,39 +134,6 @@ router.delete('/:id', async (req, res) => {
   });
   if (result.rowsAffected === 0) return res.status(404).json({ error: 'Student not found' });
   res.json({ deleted: true, id: Number(id) });
-});
-// POST /api/students/bulk - Import multiple students from CSV
-router.post('/bulk', async (req, res) => {
-  const rows = req.body.students;
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return res.status(400).json({ error: 'No students found in file.' });
-  }
-
-  const statements = [];
-  const skipped = [];
-
-  for (const r of rows) {
-    const name = String(r.name || '').trim();
-    const phone = cleanIndianPhone(r.parent_phone || '');
-    const batch = normalizeBatch(r.batch || '');
-    const fee = Number(r.monthly_fee) || 0;
-
-    if (!name || !isValidIndianPhone(phone)) {
-      skipped.push(name || 'Unnamed row');
-      continue;
-    }
-
-    statements.push({
-      sql: 'INSERT INTO students (institute_id, name, parent_phone, batch, monthly_fee) VALUES (?, ?, ?, ?, ?)',
-      args: [req.instituteId, name, phone, batch, fee],
-    });
-  }
-
-  if (statements.length > 0) {
-    await db.batch(statements, 'write');
-  }
-
-  res.status(201).json({ imported: statements.length, skipped });
 });
 
 module.exports = router;
